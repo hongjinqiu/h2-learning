@@ -1,0 +1,340 @@
+1.单表select
+
+1.1.
+select * from hr_employee where 1=1;
+
+Select.queryWithoutCache->Select.queryFlat，全表扫描，读取全部记录到内存中。
+
+1.2.
+select count(*) from hr_employee where 1=1 and cname like '%杨%';
+其中cname字段非索引。
+
+Select.queryWithoutCache->Select.queryGroup，全表扫描，内存加1，每一行读完只是+1，这一行并不会留在内存中。
+
+1.3.
+select count(*) from hr_employee
+where 1=1
+and UNIT_ID > 1
+and UNIT_ID < 100
+and cname like '%杨%'
+UNIT_ID索引，cname非索引。
+
+在搜索时，虽然是>1，但是，其在搜索过程中，UNIT_ID=1的数据也是会读取出来的，然后在内存中再比较。
+<100也是如此，即边界条件是直接搜索，写成>=2，<=99，效率会高一点。
+由于只有UNIT_ID是索引，cname不是索引字段，因此，cname时，会触发从数据库读取数据的操作。
+
+1.4.
+select * from hr_employee
+where 1=1
+and cname like '%杨%'
+其中cname字段非索引
+
+Select.queryFlat,全表扫描，
+
+1.5.
+select * from hr_employee where 1=1 limit 5,10
+
+Select.queryFlat,循环遍历，虽然是limit 5,但是，其会从0,扫描10+5=15行，读入内存，然后截取后10条出来。
+
+1.6.
+select * from hr_employee 
+where 1=1 order by cname limit 5,10
+其中cname字段非索引
+
+Select.queryFlat,全表扫描，放到LocalResult里面，设置offset，limit，sort，
+调用sort.sort方法进行排序，其里面用了分区topN算法。找出最前面的15条返回。
+
+1.7.
+select * from hr_employee 
+where 1=1 order by UNIT_ID limit 5,10 
+UNIT_ID是索引
+
+Select.queryFlat,根据UNIT_ID索引进行查询，只查询15条出来，然后取10条。
+
+1.8.
+select * from hr_employee 
+where 1=1 order by UNIT_ID desc limit 5,10
+UNIT_ID是索引
+
+Select.queryFlat,全表扫描，放LocalResult中，内存排序，取10条。即desc，无法用索引只取15条出来进行排序。
+即order desc，H2无法使用索引，只能全表扫描。
+
+1.9.
+select * from hr_employee 
+where 1=1 order by UNIT_ID, CNAME limit 5,10
+UNIT_ID是索引，而CNAME非索引。
+
+Select.queryFlat,全表扫描，放LocalResult中，内存排序，取10条。
+即order by字段，当有一个字段没有索引时，会导致全表扫描。
+
+2.0.
+select * from hr_employee 
+where 1=1 and OLDEMPLOYEE_ID > 10 order by OLDEMPLOYEE_ID, WORK_TYPE limit 5,10
+(`OLDEMPLOYEE_ID`,`WORK_TYPE`)是索引
+
+Select.queryFlat，根据索引进行查找，只查询15条出来，然后取10条。
+
+2.1.
+select * from hr_employee 
+where 1=1 and OLDEMPLOYEE_ID > 10 order by WORK_TYPE limit 5,10
+(`OLDEMPLOYEE_ID`,`WORK_TYPE`)是索引
+
+Select.queryFlat，根据索引进行查找，查找出118条出来，放LocalResult中，内存排序，取10条。
+即，索引字段为[OLDEMPLOYEE_ID,WORK_TYPE]时，而查询OLDEMPLOYEE_ID order by WORK_TYPE时，按索引查找，再进行内存排序。
+
+2.2.
+select * from hr_employee 
+where 1=1 and UNIT_ID > 2 order by OLDEMPLOYEE_ID, WORK_TYPE limit 5,10
+UNIT_ID为索引，[OLDEMPLOYEE_ID, WORK_TYPE]也是索引
+
+Select.queryFlat，根据索引进行查找，查找出996条出来，放LocalResult中，内存排序，取10条。
+这个例子中，UNIT_ID为索引，[OLDEMPLOYEE_ID, WORK_TYPE]也是索引，
+即，只能按where条件索引查找，再内存order by，没有用到(OLDEMPLOYEE_ID, WORK_TYPE)索引。
+
+2.3.
+select count(*) from
+(
+	select * from hr_employee
+	where 1=1
+) s
+where 1=1 and cname='陈金建';
+cname不是索引字段
+
+cname查询条件会被优化器给内联进去，最终的查询过程会是将符合cname条件的数据全部加载到内存，在count(*)一番。
+select count(*) from
+(
+	select * from hr_employee
+	where 1=1 and cname='陈金建';
+) s
+where 1=1 
+
+2.4.
+select count(*) from
+(
+	select * from hr_employee
+	where 1=1
+) s
+where 1=1 ;
+
+不带条件的查询时，将数据全部加载到内存，再一个个统计一遍。因此，这是一种耗内存的方式。
+
+2.5.
+select * from
+(
+	select * from hr_employee
+	where 1=1
+) s
+where 1=1 order by cname limit 5,10;
+
+全表扫描
+
+2.6.
+select * from
+(
+	select * from hr_employee
+	where 1=1
+) s
+where 1=1 order by UNIT_ID limit 5,10;
+
+虽然UNIT_ID是索引，但是order by条件还是无法内联到内部查询中。
+全表扫描，内存order by再limit一番。
+
+2.7.
+select * from
+(
+	select * from hr_employee
+	where 1=1
+) s
+where 1=1 and UNIT_ID>2 and UNIT_ID < 100 limit 5,10;
+UNIT_ID是索引，
+
+查询条件UNIT_ID内联，查询出664条，放内存中，再进行limit
+
+2.8.
+select * from
+(
+	select * from hr_employee
+	where 1=1
+) s
+where 1=1 and UNIT_ID>2 and UNIT_ID < 100 order by UNIT_ID limit 5,10;
+
+查询条件UNIT_ID内联，查询出664条，放内存中，
+再于内存中进行order by和limit。
+
+2.9.
+select * from hr_employee 
+where EMPLOYEE_ID=52
+EMPLOYEE_ID是主键
+
+主键扫描，命中一条。
+
+3.0.
+select * from   
+(
+  	select * from hr_employee  	where 1=1  
+) s  where EMPLOYEE_ID=52
+EMPLOYEE_ID是主键
+
+EMPLOYEE_ID查询条件内联，命中一条。
+
+
+2.join相关,H2中，对join的实现方式采用的是nested loop的方式。
+2.1.
+select count(*)  from HR_FACTORYTRAIN f  
+left join hr_employee e 
+on f.CREATE_BY = e.EMPLOYEE_ID  
+where 1=1  
+and f.amt_plan > 10  
+and e.cname like '%管%' 
+amt_plan不是索引，并且cname不是索引，EMPLOYEE_ID是索引字段，
+
+HR_FACTORYTRAIN，用amt_plan，无法用到索引，
+HR_EMPLOYEE，用	EMPLOYEE_ID	索引查找，
+在select里面，用condition来判断一番，
+如果把连接条件cname改成UNIT_ID=2，同时
+on f.CREATE_BY = e.EMPLOYEE_ID
+->
+on 1=1
+也没用，无法内联，只能根据on连接，再外面condition过滤。
+即，on字段在查询时如果存在索引，会做索引搜索，where语句中的条件不会加上去一起利用索引。
+
+2.2.
+select count(*) from  (
+	select f.* ,e.cname  	from HR_FACTORYTRAIN f
+	left join hr_employee e 
+	on f.CREATE_BY = e.EMPLOYEE_ID
+	where 1=1  
+) s  
+where 1=1  
+and amt_plan > 10  
+and cname like '%管%'
+
+只有AMT_PLAN能够内联，从View中查询出19条，
+最终只有15条满足条件,
+如果把连接条件cname改成UNIT_ID=2，同时
+on f.CREATE_BY = e.EMPLOYEE_ID
+->
+on 1=1
+也没用，无法内联，只能根据on连接，再外面condition过滤。
+
+即，如果你对某个查询语句，在外面包了一层，只有第一个join表的条件可以内联进去，其它的用不了。
+
+2.3.
+select   f.*  from HR_FACTORYTRAIN f  
+left join hr_employee e 
+	on f.CREATE_BY = e.EMPLOYEE_ID  
+left join 
+(
+      select t.CREATE_BY from 
+	AD_FIXEDASSET t      
+	where 1=1      
+	group by CREATE_BY  
+) s on f.CREATE_BY=s.CREATE_BY  
+where 1=1  
+and f.amt_plan > 10  
+and e.cname like '%管%'
+
+第三个join里面,CREATE_BY进行了条件内联。
+其它的，只能按照一般的join实现。
+
+2.4.
+select a.* from AD_FIXEDASSET a  
+left join AD_FIXEDASSETUSEITEM useItem 
+on useItem.FASTOCKITEM_ID=a.FASTOCKITEM_ID  
+where 1=1  
+group by a.FASTOCKITEM_ID
+FASTOCKITEM_ID是索引，
+
+当group by字段带索引时，其按索引遍历，可以对比前后的记录来实现添加。
+当group by字段不带索引时，全表扫描，其用一个HashMap，当key不存在时，才放入HashMap中。
+
+2.5.
+select a.* from AD_FIXEDASSET a  
+left join AD_FIXEDASSETUSEITEM useItem 
+on useItem.FASTOCKITEM_ID=a.FASTOCKITEM_ID  
+where 1=1  
+group by a.FASTOCKITEM_ID  
+having count(*) > 1
+
+其是把 [count(*) > 1] 整个作为一个表达式，在Select.addGroupSortedRow->Select.isHavingNullOrFalse方法，判断通过时，添加Result里面去。
+
+2.6.
+select a.* from AD_FIXEDASSET a  
+left join AD_FIXEDASSETUSEITEM useItem 
+on useItem.FASTOCKITEM_ID=a.FASTOCKITEM_ID  
+where 1=1  
+and a.FIXEDASSBDIN_ID > 20  
+group by a.FASTOCKITEM_ID 
+FIXEDASSBDIN_ID是索引字段
+
+其是用索引来查，用HashMap来判断重复。
+
+2.7.
+select DISTINCT(gender) from hr_employee  
+where 1=1
+
+Result方法有一个distinct,distinctRows,在add的时候做了判断，因此是一行行读，一行行加。并非把全部记录读取到内存。
+
+2.8.
+select   
+(SELECT D.ITEMNAME FROM PUB_DICCOMM D WHERE D.ITEMCODE=a.ASSETS_SMALL_TYPE AND D.PARENTCODE=a.ASSETS_BIG_TYPE) AS ASSETS_SMALL_TEXT,  
+a.* from AD_FIXEDASSET a  
+left join AD_FIXEDASSETUSEITEM useItem on useItem.FASTOCKITEM_ID=a.FASTOCKITEM_ID  
+where 1=1 
+
+这里的(SELECT D.ITEMNAME FROM PUB_DICCOMM D WHERE D.ITEMCODE=a.ASSETS_SMALL_TYPE AND D.PARENTCODE=a.ASSETS_BIG_TYPE) AS ASSETS_SMALL_TEXT
+是一个Alias，Alias里面的expression，是一个SubQuery
+
+
+
+3.Exists,Not Exists
+3.1.
+select count(*) from AD_FIXEDASSET a  
+where 1=1   and EXISTS 
+(
+  	select 1 from AD_FIXEDASSETUSEITEM f  	where 1=1  	
+	and a.FASTOCKITEM_ID=f.FASTOCKITEM_ID  
+)
+
+exists部分，放入condition部分，这里的condition是ConditionExists，里面有一个属性query。逐行计算。
+
+3.2.
+select count(*) from AD_FIXEDASSET a  
+ where 1=1   and not EXISTS 
+ (  	
+	select 1 from AD_FIXEDASSETUSEITEM f  	
+	where 1=1  	
+	and a.FASTOCKITEM_ID=f.FASTOCKITEM_ID  
+) 
+
+exists部分，放入condition部分，这里的condition是ConditionNot，里面有一个属性Expression condition。逐行计算。
+
+4.union和union all
+4.1.union
+select * from hr_employee
+where 1=1
+and UNIT_ID=2
+UNION
+select * from hr_employee
+where 1=1
+and UNIT_ID=2
+
+SelectUnion，left(Select)query一遍，right(Select)query一遍，再添加到Result中。
+
+4.2.union all
+select * from hr_employee
+where 1=1
+and UNIT_ID=2
+UNION all
+select * from hr_employee
+where 1=1
+and UNIT_ID=2
+
+还是SelectUnion，都查出来后，做内存折腾，
+
+
+
+
+
+
+

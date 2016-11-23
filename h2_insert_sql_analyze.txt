@@ -1,0 +1,98 @@
+1.insert:
+1.1.销相关，
+	JdbcStatement.executeInternal，
+		synchronized (session) {
+			......
+			updateCount = command.executeUpdate();
+			......
+		}
+	Command.executeUpdate中，
+		Object sync = database.isMultiThreaded() ? (Object) session : (Object) database;
+		synchronized (sync) {
+			......
+			......
+		}
+	->CommandContainer.update，->prepared.update();// prepared(Insert)
+	Insert.insertRows里面，
+		table.lock(session, true, false);
+		这里的lock->MVTable.lock，
+		synchronized (getLockSyncObject()) {,getLockSyncObject，根据是不是多线程，返回table 或 database，
+		获取锁的过程是往变量里添加标记的过程，不停的循环
+
+		doLock1，做了什么操作，
+		waitingSessions中第一个为这个session是，返回，否则，就不停的重试。直到超时。
+		->doLock2，
+			session.addLock(this);
+
+1.2.事务相关，
+	Command.executeUpdate中，
+		Session.Savepoint rollback = session.setSavepoint();// 调用是transactionStore里面的transaction，
+		......
+		try{
+			update();
+		} catch (DbException e) {
+			session.rollbackTo(rollback, false);// Iterator<Change> it = transaction.getChanges(savepointId);// 一个个往前回滚
+		}
+		......
+
+	MVTable.addRow中，
+		Transaction t = getTransaction(session);
+		long savepoint = t.setSavepoint();
+		try {
+
+		} catch (Throwable e) {
+			t.rollbackToSavepoint(savepoint);// 这个只是这个地方的异常，别处的异常也会引起session的往前回滚，
+			......
+			throw de;
+		}
+
+	Insert.insertRows中，
+		session.log(table, UndoLogRecord.INSERT, newRow);
+		// session.log的内容是:
+		if (table.isMVStore()) {
+		    return;
+		}
+
+
+
+2.update部分,简单看一看Update各个变量长什么样,
+2.1.锁,
+Update.update,
+	table.lock(session, true, false);
+
+2.2.事务,
+Table.updateRows,
+	Session.Savepoint rollback = session.setSavepoint();
+
+MVTable.removeRow,
+	Transaction t = getTransaction(session);
+	try {
+
+	} catch (Throwable e) {
+		t.rollbackToSavepoint(savepoint);
+	}
+
+MVTable.addRow,
+	Transaction t = getTransaction(session);
+	try {
+
+	} catch (Throwable e) {
+		t.rollbackToSavepoint(savepoint);
+	}
+
+
+
+3.delete部分,简单看一看Delete各个变量长什么样,
+3.1.锁，
+Delete.update,
+	table.lock(session, true, false);
+
+3.2.事务，
+table.removeRow(session, row);
+	Transaction t = getTransaction(session);
+	try {
+
+	} catch (Throwable e) {
+		t.rollbackToSavepoint(savepoint);
+	}
+
